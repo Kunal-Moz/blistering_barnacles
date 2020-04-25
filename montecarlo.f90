@@ -6,7 +6,7 @@ SUBROUTINE hb_loop(phi,Teff,f,ms,icount,rate,nstep,dx,dy,idummy,Tc,Tbath,dphi,r0
 !!  thermalize through nskip steps
 !!-----------------------------------------------------------------------
 !!
-  
+!! Note : comment !f2py intent(in,out) allows python to read inout parameters
   IMPLICIT NONE
   INTEGER, INTENT(IN) :: nsteps,mx,my
   REAL*8, INTENT(IN) :: r0,dphi,dx,dy,Tbath,Tc,v0(mx,my)
