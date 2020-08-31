@@ -13,9 +13,14 @@ from scipy.sparse import csr_matrix
 import scipy.sparse.linalg as spla
 import scipy.linalg.lapack as la
 
-np.seterr(divide='ignore', invalid='ignore')
-path_to_file = "Data/vrun24_sd/"
+from mpi4py import MPI
 
+np.seterr(divide='ignore', invalid='ignore')
+path_to_file = "Data/vrun26/" 
+#### MPI commands (Comment out the following lines if not using MPI)
+comm = MPI.COMM_WORLD  ## set up MPI
+NPEs = comm.Get_size()  ## # of processors
+myPE = comm.Get_rank()  ## process rank
 #### parameters for simulations ####
 parameter = {
     'mx': 64,       # Size of lattice
@@ -48,7 +53,6 @@ run_par = {
     'nmeas' : 1024,   # Number of measurements
     'Tbath' : 0.85,   # Bath temperature
     'seed' : 885253,  # Random number generator seed
-    'NPEs' : 1       # Number of Processors for MPI ( = 1 if MPI is not used )
 }
 
 fl = open(path_to_file + "input_par.dat","w")   # Storing input and run parameters
@@ -65,7 +69,7 @@ class Ginzburg_Landau_FE:
             setattr(self, iparam, parameter[iparam])
         self.nskip = self.nskip*self.mx*self.my   ## measurement steps
         self.mtot = self.mx*self.my    ## total number of sites
-        self.E = E                    ## Electric Field added as an input
+        self.dE = E                    ## Electric Field added as an input
         self.Tb = Tb                    ## Bath Temperature
         self.phi = phi                  ## Order parameter lattice -- Gap
         self.ms = ms                    ## Mean field order parameter
@@ -77,7 +81,7 @@ class Ginzburg_Landau_FE:
         self.dy = 1.0      ## Step along Y-axis
         self.Lx = self.dx*(float(self.mx)-1.0)  ## Length of sample
         self.Ly = self.dy*(float(self.my)-1.0)  ## Breadth of sample
-        self.volt = self.E*self.Ly          ## Volatge bais
+        self.volt = self.dE*self.Ly          ## Volatge bais
         self.Ex = np.zeros((self.mx,self.my)) ## Electric Field along X-direction in the lattice
         self.Ey = np.zeros((self.mx,self.my)) ## Electric Field along the Y-direction in the lattice
         self.resist = np.zeros((self.mx,self.my)) ## Resistance network
@@ -226,9 +230,10 @@ class Ginzburg_Landau_FE:
 def run_mcloop():
     start = time.time()
     ## Next 4 lines assigns the parameter values to variables outside the Class
-    nmeas = run_par['nmeas']
-    Mx = parameter['mx']
-    My = parameter['my']
+    nmeas = run_par["nmeas"]
+    nmeas = nmeas*NPEs
+    Mx = parameter["mx"]
+    My = parameter["my"]
     tloop = parameter['tloop']
     print(parameter)
     print(run_par)
@@ -247,20 +252,16 @@ def run_mcloop():
         minE = run_par['minE']  ## Min. value of E
         maxE = run_par['maxE']  ## Max value of E
         Tb = run_par['Tbath']*parameter['Tc']   ## Bath Temperature
-        # Evals = np.arange(minE, maxE, dE)    ## Set
-        E_1 = np.arange(minE, 20.0, dE)
-        E_2 = np.arange(20.0, 25.0, 0.05)
-        E_3 = np.arange(25.0, maxE, dE)
-        Evals = np.concatenate((E_1, E_2, E_3))
-        # Evals = np.append(Evals, Evals[::-1])
+        Evals = np.arange(minE, maxE, dE)    ## Set
+        Evals = np.append(Evals, Evals[::-1])
         ndata = np.size(Evals)
-        print( " Non-Equilibrium Run ")
-        print("E values :" , Evals)
+        print( "Non-Equilibrium Run")
+        print("Electric Field Values :" , Evals)
 
-    Data_Set = np.zeros((ndata, 10))
+    Data_Set = np.zeros((ndata, 9))
     phit = np.ones((Mx, My))
     msp = np.ones((Mx, My))
-    seed = run_par["seed"]
+    seed = run_par["seed"] - myPE
     for k in range(ndata):
         if tloop:
             glt = Ginzburg_Landau_FE(parameter, E, Tbvals[k], phit, msp, seed)
@@ -269,25 +270,21 @@ def run_mcloop():
             glt = Ginzburg_Landau_FE(parameter, Evals[k], Tb, phit, msp, seed)
             Data_Set[k, 0] = Evals[k]
         fm = glt.warming()
+        
+        temp_data_tt = np.zeros((nmeas//NPEs, 8))
         temp_data = np.zeros((nmeas, 8))
-        for i in range(0, nmeas):
-            temp_data[i, :] = glt.meas(fm)
-            if i%16 == 0 :
-                if (glt.E >= 20.0) and (glt.E <= 25.0 ):
-            #     # if (glt.Tb >= 1.0) and (glt.Tb <= 1.5):
-                    if tloop:
-                        np.savetxt(path_to_file + "phi_val_" + format(Tbvals[k], '.2f') + "_" + str(i) + ".dat", glt.phi)
-                    else:
-                        np.savetxt(path_to_file + "phi_val_" + format(Evals[k], '.2f') + "_" + str(i) + ".dat",glt.phi)
-        np.savetxt(path_to_file + "t_data_" + str(k) + ".dat",temp_data[:, 6])
+        # temp_data_tt = comm.scatter(temp_data[(nmeas//NPEs)*myPE:(nmeas//NPEs)*(myPE+1),:], root=0)
+        for i in range(0, nmeas//NPEs):
+            temp_data_tt[i, :] = glt.meas(fm)
+        comm.Gather(temp_data_tt ,temp_data, root = 0) #[nmeas*myPE:nmeas*(myPE+1),:]
+        if myPE == 0:
+            np.savetxt(path_to_file + "t_data_" + str(k) + ".dat",temp_data[:, 6])
         Data_Set[k, 1:9] = np.mean(temp_data, axis=0)
-        Data_Set[k, 9] = np.sqrt(Data_Set[k, 8] - Data_Set[k, 7]** 2)
-        # np.savetxt("Data/run6/phi_val_" + str(k) + ".dat", glt.phi)
         ft = glt.free_energy()
         phit = glt.phi
         msp = glt.ms
-
-    np.savetxt(path_to_file + "delta_f2py_test.dat", Data_Set)
+    if myPE == 0:
+        np.savetxt(path_to_file + "delta_f2py_test.dat", Data_Set)
     time1 = time.time() - start
     print(time1)
       
